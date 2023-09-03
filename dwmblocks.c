@@ -29,7 +29,7 @@ int getstatus(char *str, char *last);
 void setroot();
 void statusloop();
 int calculateUpdateInterval();
-void termhandler(int signum);
+void termHandler(int signum);
 
 static char statusMessages[LENGTH(blocks)][MAX_CMD_OUTPUT_LENGTH] = { 0 };
 static char statusBarOutput[MAX_STATUS_LENGTH];
@@ -45,13 +45,12 @@ void replace(char *str, char old, char new) {
 			*c = new;
 }
 
-// The previous function looked nice but unfortunately it didnt work if to_remove was in any position other than the last character
-// theres probably still a better way of doing this
-void remove_all(char *str, char to_remove) {
+void removeAll(char *str, char target) {
 	char *read = str;
 	char *write = str;
+
 	while (*read) {
-		if (*read != to_remove) {
+		if (*read != target) {
 			*write++ = *read;
 		}
 		++read;
@@ -75,14 +74,13 @@ void setStatusBlock(const Block *block, char *output, char* cmdOutput) {
 	int statusLength = strlen(block->icon);
 	strcpy(output, block->icon);
 	strcpy(output + statusLength, cmdOutput);
-	remove_all(output, '\n');
+	removeAll(output, '\n');
 	statusLength = strlen(output);
 
 	int isNotLastBlock = block != &blocks[LENGTH(blocks) - 1];
 	int shouldAddDelim = statusLength > 0 && isNotLastBlock;
 	if (shouldAddDelim) {
 		strcat(output, delim);
-		// XXX: This line was outside the if block. Please test it.
 		statusLength += strlen(delim);
 	}
 	output[statusLength++] = '\0';
@@ -219,7 +217,7 @@ void pstdout()
 	fflush(stdout);
 }
 
-void statusloop()
+void updateStatusIndefinitely()
 {
 	setupsignals();
 	// first figure out the default wait interval by finding the
@@ -287,9 +285,25 @@ void buttonhandler(int ssi_int)
 		execvp(command[0], command);
 		exit(EXIT_SUCCESS);
 	}
+
+	const Block *current;
+	for (int i = 0; i < LENGTH(blocks); i++) {
+		current = blocks + i;
+		if (current->signal == sig)
+			break;
+	}
+
+	char shCmd[1024];
+	sprintf(shCmd, "%s && kill -%d %d", current->command, current->signal+34, process_id);
+
+	char *command[] = { "/bin/sh", "-c", shCmd, NULL };
+	setenv("BLOCK_BUTTON", button, 1);
+	setsid();
+	execvp(command[0], command);
+	exit(EXIT_SUCCESS);
 }
 
-void termhandler(int signum)
+void termHandler(int signum)
 {
 	statusContinue = 0;
 }
@@ -299,12 +313,12 @@ int main(int argc, char** argv)
 	for (int i = 0; i < argc; i++) {
 		if (!strcmp("-d", argv[i]))
 			delim = argv[++i];
-		else if (!strcmp("-p",argv[i]))
+		else if (!strcmp("-p", argv[i]))
 			writeStatus = pstdout;
 	}
 
-	signal(SIGTERM, termhandler);
-	signal(SIGINT, termhandler);
+	signal(SIGTERM, termHandler);
+	signal(SIGINT, termHandler);
 
 	statusloop();
 	close(signalFD);
