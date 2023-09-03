@@ -9,8 +9,8 @@
 #include <sys/signalfd.h>
 #include <poll.h>
 #define LENGTH(X) (sizeof(X) / sizeof (X[0]))
-#define CMDLENGTH 50
-#include "config.h"
+#define MAX_CMD_OUTPUT_LENGTH 50
+#define MAX_STATUS_LENGTH 256
 
 typedef struct {
 	char* icon;
@@ -28,21 +28,20 @@ void setupsignals();
 int getstatus(char *str, char *last);
 void setroot();
 void statusloop();
+int calculateUpdateInterval();
 void termhandler(int signum);
 
-static Display *dpy;
-static int screen;
-static Window root;
-static char statusbar[LENGTH(blocks)][CMDLENGTH] = { 0 };
-static char statusstr[2][256];
+static char statusMessages[LENGTH(blocks)][MAX_CMD_OUTPUT_LENGTH] = { 0 };
+static char statusBarOutput[MAX_STATUS_LENGTH];
+static char oldStatusBarOutput[MAX_STATUS_LENGTH];
 static int statusContinue = 1;
 static int signalFD;
 static int timerInterval = -1;
 static void (*writestatus) () = setroot;
 
 void replace(char *str, char old, char new) {
-	for(char * c = str; *c; c++)
-		if(*c == old)
+	for (char * c = str; *c; c++)
+		if (*c == old)
 			*c = new;
 }
 
@@ -72,20 +71,31 @@ int gcd(int a, int b)
 	return a;
 }
 
-// Opens process *cmd and stores output in *output
-void getcmd(const Block *block, char *output)
-{
-	if (block->signal) {
-		output[0] = block->signal;
-		output++;
+void setStatusBlock(const Block *block, char *output, char* cmdOutput) {
+	int statusLength = strlen(block->icon);
+	strcpy(output, block->icon);
+	strcpy(output + statusLength, cmdOutput);
+	remove_all(output, '\n');
+	statusLength = strlen(output);
+
+	int isNotLastBlock = block != &blocks[LENGTH(blocks) - 1];
+	int shouldAddDelim = statusLength > 0 && isNotLastBlock;
+	if (shouldAddDelim) {
+		strcat(output, delim);
+		// XXX: This line was outside the if block. Please test it.
+		statusLength += strlen(delim);
 	}
+	output[statusLength++] = '\0';
+}
+
+char* runCommand(const Block *block, char *cmdOutput) {
 	char *cmd = block->command;
-	FILE *cmdf = popen(cmd,"r");
-	if (!cmdf) {
-		// printf("failed to run: %s, %d\n", block->command, errno);
-		return;
+	FILE *cmdFd = popen(cmd, "r");
+
+	if (!cmdFd) {
+		return NULL;
 	}
-	char tmpstr[CMDLENGTH] = "";
+
 	// TODO: Decide whether its better to use the last value till next time or just keep trying while the error was the interrupt
 	// this keeps trying to read if it got nothing and the error was an interrupt
 	// could also just read to a separate buffer and not move the data over if interrupted
@@ -94,31 +104,41 @@ void getcmd(const Block *block, char *output)
 	// either way you have to save the data to a temp buffer because when it fails it writes nothing and then then it gets displayed before this finishes
 	char * s;
 	int e;
+
 	do {
 		errno = 0;
-		s = fgets(tmpstr, CMDLENGTH-(strlen(delim)+1), cmdf);
+		s = fgets(cmdOutput, MAX_CMD_OUTPUT_LENGTH - (strlen(delim) + 1), cmdFd);
 		e = errno;
 	} while (!s && e == EINTR);
-	pclose(cmdf);
-	int i = strlen(block->icon);
-	strcpy(output, block->icon);
-	strcpy(output+i, tmpstr);
-	remove_all(output, '\n');
-	i = strlen(output);
-	if ((i > 0 && block != &blocks[LENGTH(blocks) - 1])) {
-		strcat(output, delim);
-	}
-	i+=strlen(delim);
-	output[i++] = '\0';
+	pclose(cmdFd);
+
+	return cmdOutput;
 }
 
-void getcmds(int time)
+void updateStatusMessage(const Block *block, char *output)
 {
-	const Block* current;
-	for(int i = 0; i < LENGTH(blocks); i++) {
-		current = blocks + i;
-		if ((current->interval != 0 && time % current->interval == 0) || time == -1) {
-			getcmd(current, statusbar[i]);
+	if (block->signal != 0) {
+		output[0] = block->signal;
+		output++;
+	}
+
+	char cmdOutput[MAX_CMD_OUTPUT_LENGTH] = "";
+	runCommand(block, cmdOutput);
+
+	setStatusBlock(block, output, cmdOutput);
+}
+
+void updateStatusMessages(int time)
+{
+	const Block* block;
+
+	for (int i = 0; i < LENGTH(blocks); i++) {
+		block = blocks + i;
+
+		int forceUpdate = time == -1;
+		int shouldUpdate = block->interval != 0 && time % block->interval == 0;
+		if (forceUpdate || shouldUpdate) {
+			updateStatusMessage(block, statusMessages[i]);
 		}
 	}
 }
@@ -129,12 +149,12 @@ void getsigcmds(int signal)
 	for (int i = 0; i < LENGTH(blocks); i++) {
 		current = blocks + i;
 		if (current->signal == signal) {
-			getcmd(current,statusbar[i]);
+			updateStatusMessage(current, statusMessages[i]);
 		}
 	}
 }
 
-void setupsignals()
+void setupSignals()
 {
 	sigset_t signals;
 	sigemptyset(&signals);
@@ -155,41 +175,47 @@ void setupsignals()
 			.sa_flags = SA_NOCLDWAIT
 	};
 	sigaction(SIGCHLD, &sigchld_action, NULL);
-
 }
 
-int getstatus(char *str, char *last)
+// This function can be splitted into multiple functions, but
+// I've added comments for the sake of simplicity.
+int updateStatusBarOutput()
 {
-	strcpy(last, str);
-	str[0] = '\0';
-	for(int i = 0; i < LENGTH(blocks); i++) {
-		strcat(str, statusbar[i]);
+	// Cache previous output
+	strcpy(oldStatusBarOutput, statusBarOutput);
+
+	// Update status bar output
+	statusBarOutput[0] = '\0';
+	for (int i = 0; i < LENGTH(blocks); i++) {
+		strcat(statusBarOutput, statusMessages[i]);
 		if (i == LENGTH(blocks) - 1)
-			strcat(str, " ");
+			strcat(statusBarOutput, " ");
 	}
-	str[strlen(str)-1] = '\0';
-	return strcmp(str, last);//0 if they are the same
+	statusBarOutput[strlen(statusBarOutput)-1] = '\0';
+
+	// Check if it's been updated
+	return strcmp(statusBarOutput, oldStatusBarOutput);
 }
 
-void setroot()
+void updateWindowName()
 {
-	if (!getstatus(statusstr[0], statusstr[1]))//Only set root if text has changed.
+	if (!updateStatusBarOutput())
 		return;
-	Display *d = XOpenDisplay(NULL);
-	if (d) {
-		dpy = d;
-	}
-	screen = DefaultScreen(dpy);
-	root = RootWindow(dpy, screen);
-	XStoreName(dpy, root, statusstr[0]);
-	XCloseDisplay(dpy);
+
+	Display *display = XOpenDisplay(NULL);
+	int screen = DefaultScreen(display);
+	Window root = RootWindow(display, screen);
+
+	XStoreName(display, root, statusBarOutput);
+
+	XCloseDisplay(display);
 }
 
 void pstdout()
 {
-	if (!getstatus(statusstr[0], statusstr[1]))//Only write out if text has changed.
+	if (!updateStatusBarOutput())
 		return;
-	printf("%s\n",statusstr[0]);
+	printf("%s\n", statusBarOutput);
 	fflush(stdout);
 }
 
@@ -270,11 +296,11 @@ void termhandler(int signum)
 
 int main(int argc, char** argv)
 {
-	for(int i = 0; i < argc; i++) {
+	for (int i = 0; i < argc; i++) {
 		if (!strcmp("-d", argv[i]))
 			delim = argv[++i];
-		else if(!strcmp("-p",argv[i]))
-			writestatus = pstdout;
+		else if (!strcmp("-p",argv[i]))
+			writeStatus = pstdout;
 	}
 
 	signal(SIGTERM, termhandler);
