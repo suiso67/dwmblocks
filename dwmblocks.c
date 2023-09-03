@@ -33,15 +33,14 @@ void termhandler(int signum);
 static Display *dpy;
 static int screen;
 static Window root;
-static char statusbar[LENGTH(blocks)][CMDLENGTH] = {0};
+static char statusbar[LENGTH(blocks)][CMDLENGTH] = { 0 };
 static char statusstr[2][256];
 static int statusContinue = 1;
 static int signalFD;
 static int timerInterval = -1;
 static void (*writestatus) () = setroot;
 
-void replace(char *str, char old, char new)
-{
+void replace(char *str, char old, char new) {
 	for(char * c = str; *c; c++)
 		if(*c == old)
 			*c = new;
@@ -64,7 +63,7 @@ void remove_all(char *str, char to_remove) {
 int gcd(int a, int b)
 {
 	int temp;
-	while (b > 0){
+	while (b > 0) {
 		temp = a % b;
 
 		a = b;
@@ -76,14 +75,13 @@ int gcd(int a, int b)
 // Opens process *cmd and stores output in *output
 void getcmd(const Block *block, char *output)
 {
-	if (block->signal)
-	{
+	if (block->signal) {
 		output[0] = block->signal;
 		output++;
 	}
 	char *cmd = block->command;
 	FILE *cmdf = popen(cmd,"r");
-	if (!cmdf){
+	if (!cmdf) {
 		// printf("failed to run: %s, %d\n", block->command, errno);
 		return;
 	}
@@ -107,7 +105,7 @@ void getcmd(const Block *block, char *output)
 	strcpy(output+i, tmpstr);
 	remove_all(output, '\n');
 	i = strlen(output);
-	if ((i > 0 && block != &blocks[LENGTH(blocks) - 1])){
+	if ((i > 0 && block != &blocks[LENGTH(blocks) - 1])) {
 		strcat(output, delim);
 	}
 	i+=strlen(delim);
@@ -117,11 +115,10 @@ void getcmd(const Block *block, char *output)
 void getcmds(int time)
 {
 	const Block* current;
-	for(int i = 0; i < LENGTH(blocks); i++)
-	{
+	for(int i = 0; i < LENGTH(blocks); i++) {
 		current = blocks + i;
-		if ((current->interval != 0 && time % current->interval == 0) || time == -1){
-			getcmd(current,statusbar[i]);
+		if ((current->interval != 0 && time % current->interval == 0) || time == -1) {
+			getcmd(current, statusbar[i]);
 		}
 	}
 }
@@ -129,10 +126,9 @@ void getcmds(int time)
 void getsigcmds(int signal)
 {
 	const Block *current;
-	for (int i = 0; i < LENGTH(blocks); i++)
-	{
+	for (int i = 0; i < LENGTH(blocks); i++) {
 		current = blocks + i;
-		if (current->signal == signal){
+		if (current->signal == signal) {
 			getcmd(current,statusbar[i]);
 		}
 	}
@@ -250,11 +246,9 @@ void buttonhandler(int ssi_int)
 	char button[2] = {'0' + ssi_int & 0xff, '\0'};
 	pid_t process_id = getpid();
 	int sig = ssi_int >> 8;
-	if (fork() == 0)
-	{
+	if (fork() == 0) {
 		const Block *current;
-		for (int i = 0; i < LENGTH(blocks); i++)
-		{
+		for (int i = 0; i < LENGTH(blocks); i++) {
 			current = blocks + i;
 			if (current->signal == sig)
 				break;
@@ -276,8 +270,7 @@ void termhandler(int signum)
 
 int main(int argc, char** argv)
 {
-	for(int i = 0; i < argc; i++)
-	{
+	for(int i = 0; i < argc; i++) {
 		if (!strcmp("-d", argv[i]))
 			delim = argv[++i];
 		else if(!strcmp("-p",argv[i]))
